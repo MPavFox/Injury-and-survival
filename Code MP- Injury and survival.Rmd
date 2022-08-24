@@ -1,0 +1,1149 @@
+---
+title: "Wound chapter"
+author: "Melissa Pavez-Fox"
+date: "20/01/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Data tidying
+
+library(lubridate)
+library(stringr)
+library(magrittr)
+library(readxl)
+#Multiple imputation
+library(mice)
+#Survival models
+library(survival)
+library(coxme)
+#Logistic models
+library(lme4)
+#Plots
+library(survminer)
+library(ggplot2)
+library(effects)
+library(ggpubr)
+library(ggeffects)
+library(sjPlot)
+library(ggdag)#DAGS
+#Post-hoc conditional effects
+library(emmeans)
+
+```
+
+#Load datasets
+```{r echo=-1, message=FALSE,comment=""}
+setwd("C:/Users/mp660/OneDrive - University of Exeter/PhD/3rd chapter/Data for Markdown")
+
+#Load wound data
+wound_data = read.csv('wounds.csv')
+#Load fem survival data
+fem_data = read.csv('surv_fem.csv')
+#Load male survival data
+male_data = read.csv('surv_males.csv')
+#Load survival data
+surv_ages = read.csv('surv_ages.csv')
+#Data for test reliability of proxies
+female_rank_cor <- read.csv("female_rank_cor.csv")
+male_rank_cor <- read.csv("male_rank_cor.csv")
+
+```
+
+
+Format dataframes
+```{r}
+#REformat variables for analysis
+surv_ages %<>% mutate(time_1 = as.numeric(time_1),
+                       time_2 = as.numeric(time_2),
+                       id = factor(id),
+                       event = factor(event),
+                       is_severe = factor(is_severe),
+                       death = as.numeric(death),
+                       group = factor(group),
+                       year_bim = factor(year_bim),
+                       age = as.numeric(age),
+                       sex = factor(sex),
+                       is_mating = factor(is_mating),
+                       severity = factor(severity, levels = c('1','0','2')))
+
+fem_data %<>%   mutate(time_1 = as.numeric(time_1),
+                       time_2 = as.numeric(time_2),
+                       id = factor(id),
+                       event = factor(event),
+                       is_severe = factor(is_severe),
+                       death = as.numeric(death),
+                       group = factor(group),
+                       year_bim = factor(year_bim),
+                       age = as.numeric(age),
+                       sex = factor(sex),
+                       is_mating = factor(is_mating),
+                       n_kin1 = as.numeric(n_kin1),
+                       n_kin2 = as.numeric(n_kin2),
+                       rank = factor(rank),
+                       severity = factor(severity, levels = c('1','0','2')))
+
+male_data %<>%   mutate(time_1 = as.numeric(time_1),
+                       time_2 = as.numeric(time_2),
+                       id = factor(id),
+                       event = factor(event),
+                       is_severe = factor(is_severe),
+                       death = as.numeric(death),
+                       group = factor(group),
+                       year_bim = factor(year_bim),
+                       age = as.numeric(age),
+                       sex = factor(sex),
+                       is_mating = factor(is_mating),
+                       tenure = as.numeric(tenure),
+                       severity = factor(severity, levels = c('1','0','2')))
+
+#For status analyses, remove ind with NA
+fem_rank = fem_data %>% filter(!(is.na(rank)))
+male_rank = male_data %>% filter(!(is.na(tenure)))
+
+```
+
+Test association between matrilineal rank and number of relatives in the group before specifying models. Random effects for repeated measures per individual (id) and group.
+```{r}
+
+#Close kin
+test1 = lmerTest::lmer(scale(n_kin2) ~ rank + (1|id) + (1|group) , data = fem_data)#rankLow = -0.05, p = 0.324
+
+#Extended kin
+test2 = lmerTest::lmer(scale(n_kin1) ~ rank + (1|id) + (1|group), data = fem_data)#rankLow = -0.02, p = 0.738
+
+```
+
+
+Q1: Does being injured increase the hazard of death?
+```{r}
+#######SURVIVAL ANALYSIS TO TEST IF WOUNDED ANIMALS HAVE HIGHER HAZARD COMPARED TO NON WOUNDED INDIVIDUALS####
+#Simplest model
+model1 = coxme(Surv(time_1, time_2, death) ~ event + sex + is_mating + (1|id) + (1|year_bim) + (1|group), surv_ages)#**
+#Models with interaction
+model2 = coxme(Surv(time_1, time_2, death) ~ event*is_mating + sex + (1|id) + (1|year_bim) + (1|group), surv_ages)#NS
+model3 = coxme(Surv(time_1, time_2, death) ~ event*sex + is_mating + (1|id) + (1|year_bim) + (1|group), surv_ages)#NS
+
+#Model without random effect to test proportionality of hazards
+no_rand_mod = coxph(Surv(time_1, time_2, death) ~ event + sex +  is_mating, surv_ages)
+cox.zph(no_rand_mod)
+
+###MODEL TO TEST IF SEVERE INJURIES HAVE A HIGHER HAZARD THAN NON-SEVERE INJURIES
+#Find if interactions are significant
+model_sev1 = coxme(Surv(time_1, time_2, death) ~ severity*is_mating + sex + (1|id) + (1|year_bim) + (1|group), surv_ages)#NS
+model_sev2 = coxme(Surv(time_1, time_2, death) ~ severity*sex + is_mating + (1|id) + (1|year_bim) + (1|group), surv_ages)#*
+model_sev3 = coxme(Surv(time_1, time_2, death) ~ severity + sex + is_mating + (1|id) + (1|year_bim) + (1|group), surv_ages)#NS
+
+#Check for PH
+check = coxph(Surv(time_1, time_2, death) ~ severity*sex + is_mating, surv_ages)
+cox.zph(check)#No issues
+
+#Post-hoc test for significance of levels in interaction
+#Are there differences between sexes for each of the severity levels?
+sev1 = emmeans(model_sev2,pairwise ~ factor(sex)|factor(severity), adjust = "tukey")
+#Females had a trend to be more likely than males to die from non-severe injuries (p = 0.065). Males have higher baseline hazard (p < 0.05). 
+
+#Are there differences for males and females in how severe vs non-severe injuries impact on survival?
+sev2 = emmeans(model_sev2,pairwise ~ factor(severity)|factor(sex), adjust = "tukey")
+
+#FEMALES: Severe injuries do not translate into a higher hazard than non-severe injuries (p = 0.69). Only non-severe injuries are associated to a higher hazard of death (all injuries : p < 0.01, severe injuries: p = 0.072)
+
+#MALES: Non-severe injuries are not associated to a higher hazard of death (p = 0.89), but severe injuries had a strong negative effect on survival (p < 0.01)
+
+#Extract tables with models' estimates
+#Hazard of death from all injuries
+tab_model(model1,transform =  NULL, show.p = T, show.se = T, show.stat = T, dv.labels = "Survival")
+#Sex-dependent effect of severe injuries on hazard of death
+tab_model(model_sev2,transform =  NULL, show.p = T, show.se = T, show.stat = T, dv.labels = "Survival")
+
+
+rm(model1,model2,model3,model_sev1,model_sev2,model_sev3)
+```
+
+Q2: Does sociality influence the probability of being injured?
+
+#Social status 
+```{r}
+#-#-#-FEMALES#-#-#-
+#ALL INJURIES##
+#Simplest model
+logit_fem1 = glmer(event ~ rank + is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_rank, family = binomial,control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#ns
+#Models with interactions
+logit_fem2 = glmer(event ~ rank*scale(age_bimon) + is_mating  + (1|id) + (1|group) + (1|year_bim), data = fem_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#*
+logit_fem3 = glmer(event ~ rank*is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#ns
+
+
+#Severe injuries
+#Simplest model
+logit_sev_F1 = glmer(is_severe ~ rank + is_mating + scale(age_bimon)  + (1|id) + (1|group) +  (1|year_bim), data = fem_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#ns
+#Models with interaction
+logit_sev_F2 = glmer(is_severe ~ rank*is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#ns
+logit_sev_F3 = glmer(is_severe ~ rank*scale(age_bimon) + is_mating  + (1|id) + (1|group) + (1|year_bim), data = fem_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#ns
+
+#-#-#-#-MALES#-##--
+#Simplest model
+logit_male1 = glmer(event ~ scale(tenure) + is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = male_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#**
+#Models with interactions
+logit_male2 = glmer(event ~ scale(tenure)*is_mating + scale(age_bimon)  + (1|id) + (1|group) + (1|year_bim), data = male_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#ns
+logit_male3 = glmer(event ~ scale(tenure)*scale(age_bimon)  + is_mating + (1|id) + (1|group) + (1|year_bim), data = male_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#**
+
+#Check collinearity between tenure and age
+car::vif(logit_male1)#no issues vif = 1.01
+
+#Severe injuries
+#Simplest model
+logit_sev_M1 = glmer(is_severe ~ scale(tenure) + scale(age_bimon) + is_mating + (1|id) + (1|group)+ (1|year_bim), data = male_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#ns
+#Model with interactions
+logit_sev_M2 = glmer(is_severe ~ scale(tenure)*is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = male_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#ns
+logit_sev_M3 = glmer(is_severe ~ scale(tenure)*scale(age_bimon)  + is_mating + (1|id) + (1|group) + (1|year_bim), data = male_rank, family = binomial, control=glmerControl(optimizer="bobyqa",
+                                 optCtrl=list(maxfun=2e5)))#*
+
+#Generate tables
+#Social status predicting injury risk in females
+tab_model(logit_fem2,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Injury risk")
+
+#Social status predicting severe injury risk in females
+tab_model(logit_sev_F1,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Severe injury risk")
+
+#Social status predicting injury risk in males
+tab_model(logit_male3,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Injury risk")
+
+#Social status predicting severe injury risk in males
+tab_model(logit_sev_M3,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Severe injury risk")
+
+
+rm(logit_fem1,logit_fem2,logit_fem3,logit_sev_F1,logit_sev_F2,logit_sev_F3,
+  logit_male1,logit_male2,logit_male3,logit_sev_M1,logit_sev_M2,logit_sev_M3)
+```
+
+
+#Affiliative partners
+```{r}
+#-#-#-CLOSE KIN#-#-#-
+#ALL INJURIES##
+#Simplest model
+logit_fem1 = glmer(event ~ scale(n_kin2) + is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial,control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#p = 0.059
+#Models with interactions
+logit_fem2 = glmer(event ~ scale(n_kin2)*scale(age_bimon)  + is_mating + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#ns
+logit_fem3 = glmer(event ~ scale(n_kin2)*is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#ns
+
+
+#Severe injuries
+#Simplest model
+logit_sev_F1 = glmer(is_severe ~ scale(n_kin2) + is_mating + scale(age_bimon)  + (1|id) + (1|group) +  (1|year_bim), data = fem_data, family = binomial)#ns
+#Models with interactions
+logit_sev_F2 = glmer(is_severe ~ scale(n_kin2)*is_mating  + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#ns
+logit_sev_F3 = glmer(is_severe ~ scale(n_kin2)*scale(age_bimon)  + is_mating  + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#ns
+
+
+#-#-#-EXTENDED KIN#-#-#-
+#ALL INJURIES##
+#Simplest model
+logit_fem1.1 = glmer(event ~ scale(n_kin1) + is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#*
+#Models with interactions
+logit_fem1.2 = glmer(event ~ scale(n_kin1)*scale(age_bimon) + is_mating  + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#ns
+logit_fem1.3 = glmer(event ~ scale(n_kin1)*is_mating  + scale(age_bimon)  + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#ns
+
+
+#Severe injuries
+#Simplest model
+logit_sev_F1.1 = glmer(is_severe ~ scale(n_kin1) + is_mating + scale(age_bimon) + (1|id) + (1|group) +  (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#ns
+#Model with interactions
+logit_sev_F1.2 = glmer(is_severe ~ scale(n_kin1)*is_mating  + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#p = 0.05
+logit_sev_F1.3 = glmer(is_severe ~ scale(n_kin1)*scale(age_bimon) + is_mating + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))#ns
+
+#Extract tables
+#Close kin predicting injury risk in females
+tab_model(logit_fem1,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Injury risk")
+
+#Close kin predicting severe injury risk in females
+tab_model(logit_sev_F1,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Severe injury risk")
+
+#Extended kin predicting injury risk in females
+tab_model(logit_fem1.1,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Injury risk")
+
+#Extended kin predicting severe injury risk in females
+tab_model(logit_sev_F1.2,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Severe injury risk")
+
+
+
+rm(logit_fem1,logit_fem2,logit_fem3,logit_sev_F1,logit_sev_F2,logit_sev_F3,
+   logit_fem1.1,logit_fem1.2,logit_fem1.3,logit_sev_F1.1,logit_sev_F1.2,logit_sev_F1.3)
+```
+
+
+Q3: Does sociality affect the hazard of death after being injured
+
+Survival models to test effect of social status on injured individuals
+```{r}
+#######SURVIVAL ANALYSIS FOR FEMALES#-#-#-#-
+#Model for all injuries
+fem = coxme(Surv(time_1, time_2, death) ~ event*rank  + is_mating + (1|id) + (1|group) + (1|year_bim), fem_data)#ns
+
+#CHECK PH
+check = coxph(Surv(time_1, time_2, death) ~ event*rank  + is_mating, fem_data)
+cox.zph(check)#NO issues
+
+#SEVERITY MODELS FOR FEMALES
+fem_sev = coxme(Surv(time_1, time_2, death) ~ is_severe*rank + is_mating + (1|id) + (1|group) + (1|year_bim), fem_data)#ns
+
+#Test proportionality of hazards
+check = coxph(Surv(time_1, time_2, death) ~ is_severe*rank  +  is_mating, fem_data)
+cox.zph(check)#No issues
+
+####SURVIVAL ANALYSIS FOR MALES#-#-#-#-#-
+#Model for all injuries
+male = coxme(Surv(time_1, time_2, death) ~ event*scale(tenure) + is_mating + (1|id) + (1|group) + (1|year_bim), male_data)#ns
+
+model_check = coxph(Surv(time_1, time_2, death) ~ event*scale(tenure) + is_mating, male_data)#ns
+cox.zph(model_check)#No issues
+
+#SEVERITY MODELS FOR MALES
+male_sev = coxme(Surv(time_1, time_2, death) ~ is_severe*scale(tenure) + is_mating + (1|id) + (1|group) + (1|year_bim), male_data)#ns
+
+#Test proportionality of hazards
+check = coxph(Surv(time_1, time_2, death) ~ is_severe*scale(tenure)  + is_mating, male_data)
+cox.zph(check)#No issues
+
+###
+###IMPUTATION OF MISSING DATA#####
+imp = mice(male_data, defaultMethod = 'pmm', m = 20)#20 iterations using predictive mean matching
+
+coximpute = with(imp,coxph(Surv(time_1, time_2, death) ~ event*scale(tenure) + is_mating, male_data))
+summary(pool(coximpute))
+
+cox_sevimpute = with(imp,coxph(Surv(time_1, time_2, death) ~ is_severe*scale(tenure) + is_mating, male_data))
+summary(pool(cox_sevimpute))
+
+#Extract tables
+#Social status buffering effect of injuries on female survival
+tab_model(fem, transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Survival")
+
+#Social status buffering effect of severe injuries on female survival
+tab_model(fem_sev,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Survival")
+
+#Social status buffering effect of injuries on male survival
+tab_model(male,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Survival")
+
+#Social status buffering effect of severe injuries on male survival
+tab_model(male_sev,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Survival")
+
+rm(model_check, fem,check, male, male_sev,fem_sev,imp,coximpute,cox_sevimpute,for_plot)
+   
+```
+
+
+Survival models to test the effect of affiliative partners on injured individuals
+```{r}
+
+#MODELS FOR CLOSE KIN#-#-#-#-
+#model
+fem1 = coxme(Surv(time_1, time_2, death) ~ event*scale(n_kin2) + is_mating + (1|id) + (1|group) + (1|year_bim), fem_data)#ns
+#Chekc PH
+check = coxph(Surv(time_1, time_2, death) ~ event*scale(n_kin2)  + is_mating, fem_data)
+cox.zph(check)#No issues
+
+#SEVERE INJURIES###-#-
+#Model
+fem_sev1 = coxme(Surv(time_1, time_2, death) ~ is_severe*scale(n_kin2) + is_mating + (1|id) + (1|group)+ (1|year_bim), fem_data)#ns
+
+#Check PH
+check = coxph(Surv(time_1, time_2, death) ~ is_severe*scale(n_kin2) + is_mating, fem_data)
+cox.zph(check)#No issues
+
+
+#EXTENDED KIN
+#ALL INJURIES####
+fem = coxme(Surv(time_1, time_2, death) ~ event*scale(n_kin1) + is_mating + (1|id) + (1|group) + (1|year_bim), fem_data)#ns
+
+#CHeck PH 
+check = coxph(Surv(time_1, time_2, death) ~ event*scale(n_kin1) + scale(group_size) + is_mating, fem_data)
+cox.zph(check)#no issues
+
+#SEVERE INJURIES###-#-
+#MODEL
+fem_sev = coxme(Surv(time_1, time_2, death) ~ is_severe*scale(n_kin1)  + is_mating + (1|id) + (1|group) + (1|year_bim), fem_data)#ns
+
+#CHECK PH model
+check = coxph(Surv(time_1, time_2, death) ~ is_severe*scale(n_kin1)  + is_mating, fem_data)
+cox.zph(check)#No issues
+
+
+#Extract models' outputs
+#Close kin buffering effect of injuries on female survival
+tab_model(fem1,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Survival")
+
+#Close kin buffering effect of severe injuries on female survival
+tab_model(fem_sev1,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Survival")
+
+#Extended kin buffering effect of injuries on female survival
+tab_model(fem,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Survival")
+
+#Extended kin buffering effect of severe injuries on female survival
+tab_model(fem_sev,transform =  NULL, show.p = T, show.se = T, 
+        show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = "Survival")
+
+rm(check, fem,fem_sev,fem1,fem_sev1)      
+```
+
+#PLOTS
+Figure 2: Effect of injuries on survival 
+```{r}
+#Figure 2A: survival curves for injured vs uninjured animals
+#rerun model without random effects (can not be included for using survfit)
+cox_model = coxph(Surv(time_1, time_2, death) ~ event + sex + is_mating, surv_ages)
+
+#Survival curves: plot is for females during mating season, but is similar for males
+cox_plot = survfit(cox_model, newdata = data.frame(sex = "F", is_mating = "1", event = c("0","1")))
+ggsurvplot(cox_plot, data = surv_ages,
+           conf.int = TRUE, size = 1,
+           conf.int.style = "ribbon",
+           conf.int.alpha = 0.1,
+           size = 1,
+           censor.size=0.1, 
+           linetype = c("dashed","solid"),
+           lengend = "bottom",
+           legend.title = "Injury status",
+           legend.labs = c("Uninjured","Injured"),
+           break.time.by = 5,
+           xlab = "Age (years)",
+           xlim = c(4,30),
+           palette = c("grey47","indianred"))
+
+#Figure 2B: hazard ratio based on severity by sex
+#Change factor order of severity to leave uninjured as intercept
+surv_ages1 = surv_ages %<>% mutate(severity = factor(severity, levels = c('0','1','2')))
+#Run model
+cox_model = coxph(Surv(time_1, time_2, death) ~ severity*sex + is_mating, surv_ages1)
+
+plot_surv = plot_model(cox_model, type = "int", ci.lvl = 0.95, ci.style = "bar", dot.size = 3.5, line.size = 1,
+                       colors = c("lightcoral","darkslategray4"))
+plot_surv + theme_bw() 
+
+```
+
+Figure 3: Incidence of injuries as function of social status in females and males
+```{r}
+
+#FIGURE 3A: Social status*Age Females
+fit= glmer(event ~ rank*scale(age_bimon) + is_mating + (1|id) + (1|group) + (1|year_bim), data = fem_rank, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))
+
+#Get fitted values
+ef1 <- effect(term="rank*scale(age_bimon)", 
+              xlevels=list(rank = c("High","Low"),
+                           age_bimon = seq(4,29,1)),
+              mod=fit)
+
+#Convert to dataframe
+efdata1 <-as.data.frame(ef1)
+efdata1$rank = as.factor(efdata1$rank)#factor
+fem_rank$event1 = as.integer(as.character(fem_rank$event))#integer
+fem_rank %<>% mutate(event1 = ifelse(event1 == 1, 0.18, 0))#Match event data point to y-axis length
+
+#Plot
+Fig3A = ggplot(efdata1, aes(x=age_bimon, y=fit, color=rank,group=rank)) + 
+  geom_line(size=1.2, aes(linetype = rank)) +
+  geom_ribbon(aes(ymin=fit-se, ymax=fit+se, fill= rank),alpha=0.3) + 
+   #Add raw data
+  geom_jitter(data = fem_rank,
+              aes(y = event1), colour = "antiquewhite4",
+              size = 4, alpha = 0.2, height = 0.0015) +
+  scale_color_manual(values = c("pink4","goldenrod1")) +
+  scale_fill_manual(values = c("pink4","goldenrod1")) +
+  scale_y_continuous(expand = c(0, 0.01)) +
+  scale_x_continuous(breaks=seq(0,29,5)) +
+  labs(x= "Age (years)", y="Probability of being injured", 
+       color="Social status", fill="Social status", linetype = "Social status") + theme_classic() + theme(text=element_text(size=20), legend.position = c(0.2,0.75),legend.text = element_text(size = 18))
+
+
+#FIGURE 3B: Social status*Age Males
+fit = glmer(event ~ scale(tenure)*scale(age_bimon) + is_mating + (1|id) + (1|year_bim) + (1|group), data = male_rank, family = binomial)
+
+#Get 20th and 80th quantiles for tenure
+x = quantile(male_rank$tenure, probs = c(0.2,0.8))
+
+#Get fitted values
+ef1 <- effect(term ="scale(tenure)*scale(age_bimon)",
+              xlevels = list(tenure = c(x[1],x[2]),
+                            age_bimon = seq(4,26,1)),               
+                            mod=fit)
+
+#Convert to dataframe
+efdata1 <- as.data.frame(ef1)
+efdata1$tenure = as.factor(as.character(efdata1$tenure))#factor
+male_rank$event1 = as.integer(as.character(male_rank$event))#integer
+male_rank %<>% mutate(event1 = ifelse(event1 == 1, 0.085, 0))#Match datapoints to y-axis length
+
+#Plot
+Fig3B = ggplot(efdata1, aes(x=age_bimon, y=fit, color= tenure, group= tenure)) + 
+  geom_line(size=1.2, aes(linetype = tenure)) +
+  geom_ribbon(aes(ymin= fit-se, ymax= fit+se, fill= tenure),alpha=0.3) + 
+   #Add raw data
+  geom_jitter(data = male_rank,
+              aes(y = event1), colour = "antiquewhite4",
+              size = 4, alpha = 0.2, height = 0.0015)  +
+  scale_color_manual(labels = c("High","Low"),values = c("pink4","goldenrod1")) +
+  scale_fill_manual(labels = c("High","Low"), values = c("pink4","goldenrod1")) +
+  scale_x_continuous(breaks=seq(0,26,5)) +
+  scale_y_continuous(breaks=seq(0,0.1,0.025)) +
+  labs(x= "Age (years)", y="Probability of being injured", 
+       color="Social status", fill="Social status", linetype = "Social status") + theme_classic() + 
+       theme(text=element_text(size=20), legend.position = c(0.2,0.75), 
+             legend.text =  element_text(size = 18))
+                                                                  
+```
+
+
+Figure 4: incidence of injuries as function of affiliative partners 
+```{r}
+
+#FIGURE 4: Affiliative partners on injury risk
+fit = glmer(event ~ scale(n_kin1) + is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))
+
+#Get fitted values
+ef1 <- effect(term="scale(n_kin1)",
+              xlevels=list(n_kin1 = 0:38),
+              mod=fit)
+#Convert to dataframe
+efdata1 <- as.data.frame(ef1)
+fem_data$event1 = as.integer(as.character(fem_data$event))#integer
+fem_data %<>% mutate(event1 = ifelse(event1 == 1, 0.022, 0))#Match datapoints to y-axis length
+
+#Plot
+Fig4 = ggplot(efdata1, aes(x= n_kin1, y= fit)) + 
+  geom_line(size=1.2, colour = "slategray") +
+  geom_ribbon(aes(ymin= fit-se, ymax= fit+se),alpha=0.3, fill = "slategray") + 
+  #Add raw data
+  geom_jitter(data = fem_data,
+              aes(y = event1), colour = "antiquewhite4",
+              size = 4, alpha = 0.2, height = 0.0002)  +
+  scale_x_continuous(breaks=seq(0,38,10)) +
+  scale_y_continuous(breaks=seq(0,0.025,0.01)) +
+  labs(x= "Affiliative partners in the group", y="Probability of being injured") + 
+  theme_classic() + theme(text=element_text(size=20), legend.position = c(0.2,0.75), 
+                          legend.text =  element_text(size = 18))
+
+```
+
+#SUPLEMENTARY ANALYSES
+Post hoc d-sep Confirmatory Path Analysis [Shilbey, 2000]
+```{r}
+#First remove last bimonth for culled individuals to convert coxmodels to logistic models where 1= death in a given bimonth and 0 = alive
+fem_logit = fem_rank %>% filter(!(status == 2))
+male_logit = male_rank %>% filter(!(status == 2))
+
+##DAG lINKING SOCIAL STATUS TO SURVIVAL IN FEMALES
+#Test claims of independence (only those biologically meaningful kept)
+#(survival,rank:age){age, injury}
+fem1 = glmer(death ~ rank:scale(age_bimon) + scale(age_bimon) + event + (1|id) + (1|year_bim) + (1|group), data = fem_logit, family = binomial)
+#(survival, season){age, injury}
+fem2 = glmer(death ~ is_mating + event + (1|id) + (1|year_bim) + (1|group), data = fem_logit, family = binomial)
+#(age,season){0}not meaningful
+#(season,rank:age){rank,age}not meaningful
+#(rank:age, age){0} correlated errors
+
+#Extract probabilities
+#fem2: rank:age
+p1 = coef(summary(fem1))[4,4]
+#fem3: season
+p2 = coef(summary(fem2))[2,4]
+
+#Sum probabilities to contrast with chi-square distribution
+sum_p = sum(log(p1)+log(p2))
+C = -2*sum_p 
+##Degrees of freedom = number of independence claims x2
+df = 2*2
+#Find critical value for Chi-square given degrees of freedom and significance threshold
+qtest = qchisq(0.05, df, lower.tail=FALSE)
+#If C-statistic smaller than critical value, then our path is in the non-rejection area
+C < qtest#TRUE
+#Find the probability of observing by chance this results if the data was generated by that process
+1 - pchisq(C,df)#p = 0.329
+
+##SOCIAL CAPITAL AND SURVIVAL IN FEMALES
+#(survival,season){injury,age}
+fem1 = glmer(death ~ event + scale(age_bimon) + is_mating + (1|id) + (1|group), data = fem_logit, family = binomial)#year_bim removed due to convergence issues
+#(season,age){0} not meaningful
+#(kin,season){age} not meaningful
+
+#Extract probabilities
+#fem1: season
+p = coef(summary(fem1))[4,4]
+
+#Sum probabilities to contrast with chi-square dist
+sum_p = log(p)
+C = -2*sum_p 
+##Degrees of freedom = number of independence claims x2
+df = 2*1#only one degre of freedom
+#Find critical value for Chi-square given degrees of freedom and significance threshold
+qtest = qchisq(0.05, df, lower.tail=FALSE)
+#If C-statistic smaller than critical value, then our path is in the non-rejection area
+C < qtest#TRUE
+
+#Find the probability of observing by chance these results if the data was generated by that process
+1 - pchisq(C,df)# p = 0.078
+
+##SOCIAL STATUS IN MALES
+#Test claims of independence (only those biologically meaningful kept)
+#(survival, tenure){injury,age}
+males1 = glmer(death ~ scale(tenure) + scale(age_bimon) + event + (1|id) + (1|year_bim) + (1|group), data = male_logit, family = binomial)
+#(survival, season){injury,age}
+males2 = glmer(death ~ is_mating + scale(age_bimon) + event + (1|id) + (1|year_bim) + (1|group), data = male_logit, family = binomial)
+#(survival, tenure:age){age,injury}
+males3 = glmer(death ~ is_mating + scale(tenure):scale(age_bimon) + scale(age_bimon) + event + (1|id) + (1|year_bim) + (1|group), data = male_logit, family = binomial)
+#(age,season){0} not meaningful
+#(tenure:age, season){0} not meaningful
+#(season, tenure){0} not meaningful
+#(tenure:age, tenure){0} correlated errors
+#(tenure:age, age){0} correlated errors
+
+#Extract probabilities
+#males1:tenure
+p1 = coef(summary(males1))[2,4]
+#males2:season
+p2 = coef(summary(males2))[2,4]
+#males3:tenure:age
+p3 = coef(summary(males3))[5,4]
+
+#Sum probabilities to contrast with chi-square dist
+sum_p = sum(log(p1)+log(p2)+log(p3))
+C = -2*sum_p 
+##Degrees of freedom = number of independence claims x2
+df = 2*3
+#Find critical value for Chi-square given degrees of freedom and significance threshold
+qtest = qchisq(0.05, df, lower.tail=FALSE)
+#If C-statistic smaller than critical value, then our path is in the non-rejection area
+C < qtest#TRUE
+#Find the probability of observing by chance this results if the data was generated by that process
+1 - pchisq(C,df)#p = 0.051
+
+#The analysis suggest that there is also a direct path from tenure:age to survival that we are not considering
+#Incorporating that path to the model, will remove the 3rd claim of independence
+#Sum probabilities to contrast with chi-square dist
+sum_p = sum(log(p1) + log(p2))#excluding p1
+C = -2*sum_p 
+##Degrees of freedom = number of independence claims x2
+df = 2*2#only 2 degrees of freedom now
+#Find critical value for Chi-square given degrees of freedom and significance threshold
+qtest = qchisq(0.05, df, lower.tail=FALSE)
+#If C-statistic smaller than critical value, then our path is in the non-rejection area
+C < qtest#TRUE
+#Find the probability of observing by chance this results if the data was generated by that process
+1 - pchisq(C,df)#p = 0.26
+
+#MODEL IS BETTER SUPPORTED NOW
+
+```
+
+Obtain path coefficients. Unstandardized coefficients reported in Tables, but probabilities are plotted in DAGs.
+```{r}
+#SOCIAL STATUS AND SURVIVAL IN FEMALES#
+#Models predicting endogenous variables (injury status and survival) including only paths with support
+model1 = glmer(event ~ rank:scale(age_bimon) + is_mating + scale(age_bimon) +
+                 (1|id) + (1|year_bim), data= fem_logit, family = binomial)#random eff for group removed due to convergence issues
+model2 = glmer(death ~ scale(age_bimon) + event + 
+                 (1|id) + (1|year_bim) + (1|group), data = fem_logit, family = binomial)
+model3 = glmer(event ~ rank + scale(age_bimon) + is_mating + 
+                 (1|id) + (1|year_bim), data= fem_logit, family = binomial)#effect of age without interaction for main effects
+
+#SOCIAL STATUS AND SURVIVAL IN MALES#
+model1M = glmer(event ~ scale(tenure)*scale(age_bimon) + is_mating + 
+                (1|id) + (1|year_bim) + (1|group), data= male_logit, family = binomial)
+model2M = glmer(death ~ scale(age_bimon):scale(tenure) + scale(age_bimon) + event + 
+                 (1|id) + (1|year_bim) + (1|group), data = male_logit, family = binomial)#no effect of tenure
+#effect of age and tenure without interaction for main effects
+model3M = glmer(event ~ scale(tenure) + scale(age_bimon) + is_mating + 
+                (1|id) + (1|year_bim) + (1|group), data= male_logit, family = binomial)
+model4M = glmer(death ~ scale(age_bimon) + scale(tenure) + event + 
+                 (1|id) + (1|year_bim) + (1|group), data = male_logit, family = binomial)
+
+#SOCIAL SUPPORT AND SURVIVAL IN FEMALES##
+#Models predicting endogenous variables (injury status, survival and social capital)
+model1F = glmer(event ~ scale(age_bimon) + scale(n_kin1) + is_mating +
+                 (1|id) + (1|year_bim) + (1|group), data= fem_logit, family = binomial)
+model2F = glmer(death ~ scale(age_bimon) + event + scale(n_kin1) +
+                 (1|id) + (1|year_bim) + (1|group), data = fem_logit, family = binomial)
+model3F = lmerTest::lmer(scale(n_kin1) ~ scale(age_bimon)+ 
+                 (1|id) + (1|year_bim) + (1|group), data = fem_logit)
+
+
+#EXTRACT TABLES with unstandardized coefficients
+#DAG1
+tab_model(model1,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Injury risk"))
+
+tab_model(model2,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Survival"))
+
+tab_model(model3,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Injury risk"))
+
+#DAG2
+tab_model(model1M,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Injury risk"))
+
+tab_model(model2M,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Survival"))
+
+tab_model(model3M,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Injury risk"))
+
+tab_model(model4M,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Survival"))
+
+#DAG3
+tab_model(model1F,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Injury risk"))
+
+tab_model(model2F,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Survival"))
+
+tab_model(model3F,transform =  NULL, show.p = T, show.se = T, show.icc = F, show.re.var = F, show.stat = T, show.r2 = F, dv.labels = c("Social capital"))
+
+```
+
+Association between social status and proxies using long-term behavioural data. For all the individuals with behavioural observation across the 10-years of study, we computed their matrilineal rank in the case of females OR their tenure in a group by the end of the year of study in the case of males.
+```{r}
+#Mixed effects linear regression to test if matrilineal rank predicts social status (as percentage of females outranked in the group)
+rank_testF = lmerTest::lmer(scale(perc.rank) ~ rank + (1|id), data = female_rank_cor)#rankLow = -1.12, p < 0.01
+
+#Mixed effects linear regression to test if group tenure predicts social status (as percentage of males outranked in the group)
+rank_testM = lmerTest::lmer(scale(perc.rank) ~ scale(tenure) + (1|id), data = male_rank_cor)#tenure = 0.67, p < 0.01
+
+```
+
+
+Healing time and Sampling effort
+```{r}
+#COMPUTE HEALING TIME##-#-#-#-#-#
+#Create a healing dataframe
+healing = wound_data
+#Keep only outcomes related to recovery
+healing %<>% filter(Outcome %in% c('Healed'))
+#Disregard individuals with unknown date of released
+healing %<>% filter(Date_Released != "")#only 250 cases
+
+#Compute time to heal 
+healing %<>% mutate(Date_Released = as.Date(Date_Released, format = "%d/%m/%Y"),
+                    Sick_date = as.Date(Sick_date, format = "%d/%m/%Y"))
+healing$healing_time <- difftime(healing$Date_Released,healing$Sick_date, units = "days")
+
+#Check how many individuals have time to heal == 0
+healing$healing_time = as.integer(healing$healing_time)
+sum(healing$healing_time == 0)#13
+
+#Remove animals with healing == 0, some are old wounds, some are incorrect follow ups, and others are probably wrong
+healing %<>% filter(healing_time != '0')#261 cases
+
+#Exclude old wounds as the time to heal for those would be longer than the computed time
+healing %<>% filter(is_old == '0')#250
+
+#Check if there are individuals with date of released = sick date
+sum(healing$Sick_date == healing$Date_Released)#NOne
+
+#Disregard follow ups and limping
+healing %<>% filter(IsFollowUp == '0',Illness %in% c('abrasion','wound(s)'))
+
+#Visualise distribution of healing time
+hist(healing$healing_time)#Two healing times above 200 days (probably incorrect)
+
+#Remove unreliable healing times
+healing %<>% filter(healing_time <= 200)
+
+#COMPUTE MEAN AND SD
+mean(healing$healing_time)
+sd(healing$healing_time)
+
+#SEVERE INJURIES#
+healing %>% group_by(is_severe) %>% summarise(mean(healing_time),sd(healing_time))
+
+rm(healing)
+#######-#-#-#-#-#-#-#--
+
+#SAMPLING EFFORT #-#-#-#-##-
+#COMPUTE AVERAGE TIME OF UPDATE FOR RECORDS
+health_update_wound <- as.data.frame(unique(wound_data$Sick_date))
+health_update_wound %<>% rename(Date = `unique(wound_data$Sick_date)`) %>% filter(Date != "")
+health_update_wound$Date = as.Date(health_update_wound$Date, format = '%d/%m/%Y')
+health_update_released <- as.data.frame(unique(wound_data$Date_Released))
+health_update_released %<>% rename(Date = `unique(wound_data$Date_Released)`) %>% filter(Date != "")
+health_update_released$Date = as.Date(health_update_released$Date, format = "%d/%m/%Y")
+
+health_update <- rbind(health_update_released,health_update_wound)
+health_update$Date = as.Date(health_update$Date, format = "%d-%b-%Y")
+health_update = as.data.frame(unique(health_update$Date))
+health_update %<>% rename(Date = `unique(health_update$Date)`)
+health_update = health_update[order(as.Date(health_update$Date, format="%d-%m-%Y")),]
+health_update = as.data.frame(health_update)
+health_update %<>% rename(Date = health_update)
+health_update %<>% filter(!(is.na(Date)))#remove NA
+
+#COMPUTE AVERAGE TIME OF UPDATING INJURIES
+mean(diff(health_update$Date))#5.6 days
+
+#COMPUTE TIME OF UPDATING PER YEAR
+for(i in 1: nrow(health_update)){ 
+  splitdate=str_split(health_update$Date[i],"-")
+  year=ifelse(nchar(splitdate[[1]][1])==4,splitdate[[1]][1],paste("20",splitdate[[1]][3], sep=""))
+  health_update$year[i]= year 
+}
+
+#Mean update per year
+health_update %>% group_by(year) %>% summarise(mean(diff(Date)))
+
+#Remove unnecessary info
+rm(health_update,health_update_released,health_update_sick,splitdate)
+
+#COMPUTE UPDATES FOR EACH INDIVIDUAL#-#-#-#-#-#-#-#
+check = wound_data %>% arrange(ANIMAL_ID,Sick_date)
+check$Sick_date = as.Date(check$Sick_date, format = '%Y-%m-%d')
+check$Date_Released = as.Date(check$Date_Released, format = '%Y-%m-%d')
+check$timetoupdate= rep(NA,nrow(check))
+
+num.zeros = 0
+num.followup = 0
+num.duplicates = 0
+
+for(i in 1:nrow(check)){
+  
+  if (i != 1){
+    if(check$ANIMAL_ID[i] == check$ANIMAL_ID[i -1]){
+      if(check$Sick_date[i] == check$Sick_date[i-1]){
+        check$timetoupdate[i] = NA
+        num.duplicates = num.duplicates + 1#compute duplicates
+      }
+      else {
+        if(check$IsFollowUp[i] == '1'){
+          check$timetoupdate[i] = check$Sick_date[i] - check$Sick_date[i-1]
+          num.followup = num.followup +1 #compute number of follow ups
+        }
+        else {
+          check$timetoupdate[i] = check$Date_Released[i] - check$Sick_date[i]
+        }
+      }
+    }
+    else {
+      check$timetoupdate[i] = check$Date_Released[i] - check$Sick_date[i]
+    }
+  }
+  if(!is.na(check$timetoupdate[i])){
+    if(check$timetoupdate[i] == "0"){
+      check$timetoupdate[i] = NA
+      num.zeros = num.zeros +1#compute number of times date released = sick date
+    }
+  }
+}
+
+
+#Compute average time of update for individuals
+check %<>% filter(!is.na(timetoupdate)) 
+mean(check$timetoupdate)#42.17 days
+#Compute time to update per year
+check %>% group_by(year) %>% summarise(mean(timetoupdate))
+
+rm(check,health_data)
+
+```
+
+SUPPLEMENTARY FIGURES
+
+Figure S1: Samples size and death events for injured and not injured animals
+```{r}
+#Load dataframe for plot
+unique_ids = read.csv('C:/Users/mp660/OneDrive - University of Exeter/PhD/3rd chapter/Data for Markdown/unique_ids.csv')
+#Subset injured and not injured animals
+injured = unique_ids %>% filter(is_injured == '1')
+not_injured = unique_ids %>% filter(is_injured == '0')
+
+#Summarise data for plot
+for_plot_inj = injured %>% group_by(sex) %>% summarise(deaths = sum(!is.na(DOD)), rem = sum(!is.na(removal)),
+                                                       alive = sum(is.na(DOD) & is.na(removal))) %>%
+                                             mutate(status = 'injured',
+                                                    sex = ifelse(sex == 'F', 'Female','Male'))
+for_plot_NI = not_injured %>% group_by(sex) %>% summarise(deaths = sum(!is.na(DOD)), rem = sum(!is.na(removal)),
+                                                       alive = sum(is.na(DOD) & is.na(removal))) %>%
+                                                mutate(status = 'not injured',
+                                                       sex = ifelse(sex == 'F', 'Female','Male'))
+
+#Change to long format
+library(reshape2)
+inj = for_plot_inj %>% select(sex,deaths,rem,alive)
+inj = melt(inj, id=c('sex'))
+
+ninj = for_plot_NI %>% select(sex,deaths,rem,alive)
+ninj = melt(ninj, id=c('sex'))
+
+#Plots
+inj %>% ggplot(aes(x = variable, y = value, fill = sex)) +
+        geom_bar(stat="identity", alpha= 0.75, position=position_dodge(), colour = "black", width = 0.65,
+                 aes(linetype = sex)) +
+        labs(x= "", y= "Number of injured individuals",fill= "Sex", linetype = "Sex") +
+        scale_fill_manual(values= c("indianred1","darkslategray4"))+ 
+        coord_flip() +
+        theme_bw()
+
+ninj %>% ggplot(aes(x = variable, y = value, fill = sex)) +
+        geom_bar(stat="identity", alpha= 0.85, position=position_dodge(), colour = "black", width = 0.65,
+                 aes(linetype = sex)) +
+        labs(x= "", y= "Number of uninjured individuals",fill= "Sex", linetype = "Sex") +
+        scale_fill_manual(values= c("indianred1","darkslategray4"))+ 
+        coord_flip() +
+        theme_bw()
+
+
+```
+
+Fig S2: Relationship between proxies for sociality and measures obtained from behavioural observations
+```{r}
+#Fig. SXA: Social status and matrilineal rank
+ggplot(female_rank_cor, aes(x=rank, y=perc.rank)) +
+  geom_boxplot() +
+  geom_jitter(color="black", size= 1.5, alpha=0.15) +
+  labs(x= "Matrilineal rank", y= "Females outranked (%)") +border() +theme_bw() + ylim(0,100)
+
+#Fig. SXB: Social status and tenure in group
+ggplot(male_rank_cor, aes(x=tenure, y=perc.rank)) + 
+  geom_point( color="black", cex= 3, alpha= 0.3) +
+  geom_smooth(method="lm" , color="gray44", fill="gray45", alpha= 0.3, se= TRUE, fullrange = TRUE)+
+  labs( x="Tenure in group (days)", y= "Males outranked (%)") + border() + theme_bw() + ylim(0,100)
+
+```
+
+
+Fig S3: Incidence of severe injuries as function of social status and affiliative partners
+```{r}
+
+#FigS3A: Probability of being severely injured as function of social status in Males
+#Social status males (females not significant)
+fit = glmer(is_severe ~ scale(tenure)*scale(age_bimon)  + is_mating + (1|id) + (1|year_bim) + (1|group), data = male_rank, family = binomial)
+#Get 20th and 80th quantiles for tenure
+x = quantile(male_rank$tenure, probs = c(0.2,0.8))
+
+#Get fitted values
+ef1 <- effect(term ="scale(tenure)*scale(age_bimon)",
+              xlevels = list(tenure = c(x[1],x[2]),
+                            age_bimon = seq(4,26,1)),               
+                            mod=fit)
+
+#Convert to dataframe
+efdata1 <- as.data.frame(ef1)
+efdata1$tenure = as.factor(as.character(efdata1$tenure))#factor
+male_rank$event1 = as.integer(as.character(male_rank$is_severe))#integer
+male_rank %<>% mutate(event1 = ifelse(event1 == 1, 0.07, 0))#Match datapoints to y-axis length
+
+#Plot
+FigS3A = ggplot(efdata1, aes(x=age_bimon, y=fit, color= tenure, group= tenure)) + 
+   geom_line(size=1.2, aes(linetype = tenure)) +
+  geom_ribbon(aes(ymin= fit-se, ymax= fit+se, fill= tenure),alpha=0.3) + 
+   #Add raw data
+  geom_jitter(data = male_rank,
+              aes(y = event1), colour = "antiquewhite4",
+              size = 4, alpha = 0.2, height = 0.0007)  +
+  scale_color_manual(labels = c("High","Low"),values = c("pink4","goldenrod1")) +
+  scale_fill_manual(labels = c("High","Low"), values = c("pink4","goldenrod1")) +
+  scale_x_continuous(breaks=seq(0,26,5)) +
+  scale_y_continuous(breaks=seq(0,0.8,0.02)) +
+  labs(x= "Age (years)", y="Probability of being severely injured", 
+       color="Social status", fill="Social status") + theme_classic() + 
+       theme(text=element_text(size=20), legend.position = c(0.2,0.75), 
+             legend.text =  element_text(size = 18))
+
+#FIGURE S3B: Affiliative partners on severe injury risk by season
+fit = glmer(is_severe ~ scale(n_kin1)*is_mating + scale(age_bimon) + (1|id) + (1|group) + (1|year_bim), data = fem_data, family = binomial, control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=100000)))
+
+#Get fitted values
+ef1 <- effect(term="scale(n_kin1)*is_mating",
+              xlevels=list(n_kin1 = 0:38,
+                           is_mating = c("0","1")),
+              mod=fit)
+
+#Convert to dataframe
+efdata1 <- as.data.frame(ef1)
+fem_data$event1 = as.integer(as.character(fem_data$event))#integer
+fem_data %<>% mutate(event1 = ifelse(event1 == 1, 0.016, 0))#Match datapoints to y-axis length
+
+#Plot
+FigS3B = ggplot(efdata1, aes(x=n_kin1, y=fit, color=is_mating,group=is_mating)) + 
+  geom_line(size=1.2, aes(linetype = is_mating)) +
+  geom_ribbon(aes(ymin=fit-se, ymax=fit+se, fill= is_mating),alpha=0.3) + 
+   #Add raw data
+  geom_jitter(data = fem_data,
+              aes(y = event1), colour = "antiquewhite4",
+              size = 2.5, alpha = 0.2, height = 0.0002) +
+  scale_color_manual(labels = c("Non-mating","Mating"),values = c("slategray","azure3")) +
+  scale_fill_manual(labels = c("Non-mating","Mating"), values = c("slategray","azure3")) +
+  scale_y_continuous(breaks=seq(0,0.017,0.005)) +
+  scale_x_continuous(breaks=seq(0,38,10)) +
+  labs(x= "Affiliative partners in the group", y="Probability of being injured", 
+       color="Season", fill="Season", linetype = "Season") + theme_classic() + theme(text=element_text(size=20), legend.position = c(0.2,0.65),legend.text = element_text(size = 18))
+
+
+```
+
+Fig.S4 and S5: DAGS for path analyses
+```{r}
+#Figure S3A: Social status and survival in females#
+dag_object1 <- ggdag::dagify(Z ~ C1,
+                             Z ~ C2,
+                             Z ~ X,
+                             Y ~ C1,
+                             Y ~ Z,
+                             labels = c("Y" = "Survival",
+                                       "Z" = "Injury status",
+                                       "C1" = "Age",
+                                       "C2" = "Season",
+                                       "X" = "Rank x Age"))
+                            
+#Plot DAG
+ggdag(dag_object1, text = FALSE, use_labels = "label") + theme_void()
+
+#Figure S3B: Social status and survival in males#
+dag_object2 <- ggdag::dagify(Z ~ C1,
+                             Z ~ C2,
+                             Z ~ C3,
+                             Z ~ X,
+                             Y ~ X,
+                             Y ~ C1,
+                             Y ~ Z,
+                             labels = c("Y" = "Survival",
+                                       "Z" = "Injury status",
+                                       "C1" = "Age",
+                                       "C2" = "Season",
+                                       "C3" = "Tenure",
+                                       "X" = "Tenure x Age"))
+ggdag(dag_object2, text = FALSE, use_labels = "label") + theme_void()
+
+
+#Figure S4: Social support and survival in females#
+dag_object3 <- ggdag::dagify(Z ~ C1,
+                             Z ~ C2,
+                             X ~ C1,
+                             Z ~ X,
+                             Y ~ X,
+                             Y ~ C1,
+                             Y ~ Z,
+                             labels = c("Y" = "Survival",
+                                       "Z" = "Injury status",
+                                       "C1" = "Age",
+                                       "C2" = "Season",
+                                       "X" = "Social capital"))
+#Plot DAG
+ggdag::ggdag(dag_object3, text = FALSE, use_labels = "label") + theme_void()
+
+
+```
+
+
+FigS6: Histogram for details on severe injuries and non-severe
+```{r}
+#Figure S6A: severe injuries by sex
+severe_injuries = wound_data %>% filter(is_severe == 1 & Area != "")
+severe_injuries %<>% mutate(Illness = ifelse(Illness == "trauma" & Area == "testis", "wound(s)", Illness))
+severe_injuries %<>% mutate(Illness = ifelse(Illness == "abrasion"|Illness == "wound(s)",
+                                            "injury", "fracture"))
+
+#Group similar areas
+unique(severe_injuries$Area)
+#Create list of words to look at for replacement and get idx
+facial = "face|facial|eyebrow|lip|teeth|cheek|check|nose"
+idx_face = which(grepl(facial,severe_injuries$Area))
+severe_injuries$Area[idx_face] = "facial"
+#Category for eyes
+idx_eye = which(grepl("eye",severe_injuries$Area))
+severe_injuries$Area[idx_eye] = "eyes"
+#Category for abdomen
+abdomen = "ventral|abdomen"
+idx_abd = which(grepl(abdomen,severe_injuries$Area))
+severe_injuries$Area[idx_abd] = "abdomen"
+#Category for ears
+idx_ear = which(grepl("ear",severe_injuries$Area))
+severe_injuries$Area[idx_ear] = "ear"
+#Category for reproductive organs
+repro = "inguinal|testicle|vagina|scrotum|penis|testis"
+idx_repro = which(grepl(repro,severe_injuries$Area))
+severe_injuries$Area[idx_repro] = "genitalia"
+#Category for limbs (fractures)
+limbs = "hand|thumb|ankle|wrist|feet|arm"
+idx_limb = which(grepl(limbs,severe_injuries$Area))
+severe_injuries$Area[idx_limb] = "limbs"
+
+
+#Plot
+ggplot(severe_injuries, aes(x = Area, fill = Illness)) +
+  geom_bar() + facet_wrap(~ sex) +
+  xlab("Area")+ ylab("Count")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+#Figure S6B: non-severe injuries by sex
+non_sevinjuries = wound_data %>% filter(is_severe == 0)
+non_sevinjuries %<>% filter(!(Illness == "limping"| 
+                              Area == ""))
+#Group similar areas
+unique(non_sevinjuries$Area)
+#Create list of words to look at for replacement and get idx
+#Category for chest
+chest = "armpit|chest|shoulder|breast|nipple"
+idx_chest = which(grepl(chest,non_sevinjuries$Area))
+non_sevinjuries$Area[idx_chest] = "chest"
+#Category for limbs
+limbs = "leg|hand|hindquarters|thigh|finger|foot|elbow|knee|ankle|wrist|arm"
+idx_limbs = which(grepl(limbs,non_sevinjuries$Area))
+non_sevinjuries$Area[idx_limbs] = "limbs"
+#Category for back
+back = "dorsal|dorso|dorsal |mount|shoulder|back"
+idx_dorsal = which(grepl(back,non_sevinjuries$Area))
+non_sevinjuries$Area[idx_dorsal] = "back"
+#Category for gluteus
+butt = "butt|callosities|callus|hip|but"
+idx_buttock = which(grepl(butt,non_sevinjuries$Area))
+non_sevinjuries$Area[idx_buttock] = "gluteus"
+
+non_sevinjuries %<>% subset(Area %in% c("chest","limbs","back","gluteus","tail"))
+
+#Plot
+ggplot(non_sevinjuries, aes(x = Area)) +
+  geom_bar() + facet_wrap(~ sex) +
+  xlab("Area")+ ylab("Count")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+
+```
+
+FigS7 : Distribution of proxies for social capital
+```{r}
+
+#Counts do not represent single females, it represent count per female per bimonthly interval
+ggplot(fem_data, aes(x = n_kin2)) +
+            geom_bar() + 
+            xlab("Number of close kin") + ylab("Count")
+
+ggplot(fem_data, aes(x = n_kin1)) +
+            geom_bar() + 
+            xlab("Number of extended kin") + ylab("Count")
+
+
+close_kin + extended_kin
+
+```
+
+
